@@ -191,10 +191,16 @@ step "Starting AFK Bot"
 
 LOG_BOT="logs/afk-bot.log"
 
-EMAIL="${EMAIL}" \
-PASSWORD="${PASSWORD}" \
-${DISPLAY:+DISPLAY="${DISPLAY}"} \
-  pnpm --filter @workspace/scripts run afk-bot >> "${LOG_BOT}" 2>&1 &
+if [ -n "${DISPLAY:-}" ]; then
+  EMAIL="${EMAIL}" \
+  PASSWORD="${PASSWORD}" \
+  DISPLAY="${DISPLAY}" \
+    pnpm --filter @workspace/scripts run afk-bot >> "${LOG_BOT}" 2>&1 &
+else
+  EMAIL="${EMAIL}" \
+  PASSWORD="${PASSWORD}" \
+    pnpm --filter @workspace/scripts run afk-bot >> "${LOG_BOT}" 2>&1 &
+fi
 
 BOT_PID=$!
 PIDS+=("$BOT_PID")
