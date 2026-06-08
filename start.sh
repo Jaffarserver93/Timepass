@@ -171,11 +171,57 @@ step "Starting API + Dashboard server"
 mkdir -p logs
 LOG_API="logs/api-server.log"
 
-# Kill any existing process on the port before starting
-if fuser -k "${PORT}/tcp" &>/dev/null 2>&1; then
-  warn "Killed existing process on port ${PORT}"
-  sleep 1
-fi
+# ── Kill any stale API server / bot processes from a previous run ──────────
+kill_port() {
+  local port="$1"
+  local killed=false
+
+  # Method 1: kill by exact command match (most reliable)
+  if pkill -f "artifacts/api-server/dist/index.mjs" 2>/dev/null; then
+    killed=true
+  fi
+
+  # Method 2: lsof — works on most Linux/macOS without extra packages
+  if command -v lsof &>/dev/null; then
+    local pids
+    pids=$(lsof -ti :"${port}" 2>/dev/null)
+    if [ -n "$pids" ]; then
+      # shellcheck disable=SC2086
+      kill -9 $pids 2>/dev/null && killed=true
+    fi
+  fi
+
+  # Method 3: fuser — if available
+  if command -v fuser &>/dev/null; then
+    fuser -k "${port}/tcp" 2>/dev/null && killed=true
+  fi
+
+  # Method 4: ss + awk — kernel-level, always present on modern Linux
+  if command -v ss &>/dev/null; then
+    local ss_pids
+    ss_pids=$(ss -lptn "sport = :${port}" 2>/dev/null \
+      | awk 'match($0, /pid=([0-9]+)/, a) {print a[1]}')
+    if [ -n "$ss_pids" ]; then
+      # shellcheck disable=SC2086
+      kill -9 $ss_pids 2>/dev/null && killed=true
+    fi
+  fi
+
+  if $killed; then
+    warn "Killed stale process(es) on port ${port} — waiting for port to free…"
+    # Wait up to 5 s for the port to release
+    local i=0
+    while [ $i -lt 10 ]; do
+      sleep 0.5
+      if ! ss -ltn "sport = :${port}" 2>/dev/null | grep -q ":${port}"; then
+        break
+      fi
+      i=$((i+1))
+    done
+  fi
+}
+
+kill_port "${PORT}"
 
 PORT="${PORT}" \
 EMAIL="${EMAIL}" \
