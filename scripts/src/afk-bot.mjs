@@ -18,11 +18,11 @@ const PASSWORD = process.env.PASSWORD;
 const TARGET_URL = "https://vektalnodes.in/earn";
 const LOGIN_URL = "https://vektalnodes.in/login";
 
-const KEEPALIVE_INTERVAL_MS = 30_000;
-const RETRY_DELAY_MS = 15_000;
-const MAX_RETRIES = 10;
+const RELOAD_INTERVAL_MS    = 60_000;  // reload /earn every 60s
+const RETRY_DELAY_MS        = 15_000;
+const MAX_RETRIES           = 10;
 const SCREENSHOT_INTERVAL_MS = 200;
-const LINK_CLICK_INTERVAL_MS = 60_000; // click links every 60s
+const CF_WAIT_MS            = 8_000;   // time to let Cloudflare challenge resolve
 
 const SCREENSHOT_FILE   = "/tmp/bot-screenshot.png";
 const STATUS_FILE       = "/tmp/bot-status.json";
@@ -174,7 +174,8 @@ async function launchBrowser() {
   }
 
   const { browser, page } = await connect({
-    headless: true,
+    // headless: false gives puppeteer-real-browser the best shot at bypassing CF
+    headless: false,
     disableXvfb: hasDisplay,
     args: [
       "--no-sandbox",
@@ -192,11 +193,51 @@ async function launchBrowser() {
     ],
     executablePath: chromePath,
     customConfig: {},
+    // turnstile: true — puppeteer-real-browser auto-solves Cloudflare Turnstile/challenges
     turnstile: true,
     connectOption: {},
+    fingerprint: true,
   });
 
   return { browser, page };
+}
+
+// ── Wait for Cloudflare challenge to clear ────────────────────────────────────
+async function waitForCloudflare(page) {
+  const CF_SELECTORS = [
+    "#challenge-running",
+    "#challenge-stage",
+    ".cf-browser-verification",
+    "#cf-challenge-running",
+    "title=Just a moment",
+  ];
+
+  log("[CF] Checking for Cloudflare challenge…");
+  for (let attempt = 0; attempt < 15; attempt++) {
+    try {
+      const title = await page.title().catch(() => "");
+      const url   = page.url();
+
+      // Cloudflare challenge pages have these markers
+      const isCF = title.toLowerCase().includes("just a moment") ||
+                   title.toLowerCase().includes("attention required") ||
+                   url.includes("/cdn-cgi/challenge-platform/");
+
+      if (!isCF) {
+        if (attempt > 0) log("[CF] Challenge cleared ✓");
+        return true;
+      }
+
+      log(`[CF] Challenge active (attempt ${attempt + 1}/15) — puppeteer-real-browser solving…`);
+      updateStatus({ lastAction: `Cloudflare challenge solving… (${attempt + 1}/15)` });
+      await sleep(2_000);
+    } catch (_) {
+      await sleep(2_000);
+    }
+  }
+
+  log("[CF] Challenge did not clear after 30s — continuing anyway.");
+  return false;
 }
 
 // ── Network interception ──────────────────────────────────────────────────────
@@ -378,14 +419,19 @@ async function doLogin(page) {
   updateStatus({ state: "logged-in", lastAction: "Login successful", lastError: null });
 }
 
-// ── Navigate to earn ──────────────────────────────────────────────────────────
+// ── Navigate / reload earn page (handles Cloudflare automatically) ────────────
 async function navigateToEarn(page) {
-  log("Navigating to earn page…");
-  updateStatus({ lastAction: "Navigating to earn page" });
-  await page.goto(TARGET_URL, { waitUntil: "networkidle2", timeout: 60_000 });
-  await sleep(3_000);
+  log("Reloading /earn page…");
+  updateStatus({ lastAction: "Reloading /earn…" });
+
+  await page.goto(TARGET_URL, { waitUntil: "domcontentloaded", timeout: 60_000 });
+
+  // Let puppeteer-real-browser solve any CF challenge that appears
+  await waitForCloudflare(page);
+  await sleep(2_000);
+
   const url = page.url();
-  log(`Earn page URL: ${url}`);
+  log(`Earn page URL after load: ${url}`);
   updateStatus({ currentUrl: url });
 
   if (url.includes("login") || url.includes("signin")) {
@@ -643,15 +689,26 @@ async function run() {
       }
 
       log("=== Bot is now AFK on the earn page ===");
-      updateStatus({ state: "running", lastAction: "AFK on earn page — keep-alive loop started" });
+      updateStatus({ state: "running", lastAction: "AFK on earn page — reload loop started" });
       retries = 0;
-
-      let lastLinkClickTime = 0;
+      let cycleCount = 0;
 
       while (true) {
-        await sleep(KEEPALIVE_INTERVAL_MS);
-        const url = page.url();
-        if (url.includes("login") || url.includes("signin")) {
+        cycleCount++;
+        log(`── Cycle #${cycleCount}: reloading /earn in ${RELOAD_INTERVAL_MS / 1000}s ──`);
+        updateStatus({ state: "running", lastAction: `Cycle #${cycleCount} — waiting 60s before reload` });
+
+        // Wait 60 seconds, then do a full page reload
+        await sleep(RELOAD_INTERVAL_MS);
+
+        log(`[RELOAD] Cycle #${cycleCount} — reloading /earn now`);
+        updateStatus({ state: "running", lastAction: `Cycle #${cycleCount} — reloading /earn` });
+
+        // Full page reload — puppeteer-real-browser with turnstile:true handles CF automatically
+        const onEarn = await navigateToEarn(page);
+
+        if (!onEarn) {
+          // Redirected to login — session expired
           log("Session expired — re-logging in…");
           updateStatus({ state: "re-login", lastAction: "Session expired, re-logging in" });
           await doLogin(page);
@@ -659,14 +716,11 @@ async function run() {
           if (!back) throw new Error("Could not re-navigate to earn page after re-login.");
         }
 
+        // Small keepalive actions (scroll + mouse move) after load
         await keepAlive(page);
 
-        // Click page links every LINK_CLICK_INTERVAL_MS to record redirects/tokens
-        const now = Date.now();
-        if (now - lastLinkClickTime >= LINK_CLICK_INTERVAL_MS) {
-          lastLinkClickTime = now;
-          await clickLinksOnPage(page);
-        }
+        // Click the Open LinkPays button and record the full redirect chain
+        await clickLinksOnPage(page);
       }
     } catch (err) {
       log(`Error: ${err.message}`);
