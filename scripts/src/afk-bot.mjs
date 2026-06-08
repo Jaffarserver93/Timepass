@@ -395,167 +395,177 @@ async function navigateToEarn(page) {
   return true;
 }
 
-// ── Click links on earn page and record everything ────────────────────────────
+// ── Click the Open LinkPays button and record everything ─────────────────────
 async function clickLinksOnPage(page) {
   try {
+    // Make sure we're on the earn page before scanning
     const pageUrl = page.url();
-    log(`[LINK-CLICK] Scanning page for clickable links/buttons: ${pageUrl}`);
-    updateStatus({ lastAction: "Scanning page links…" });
+    if (!pageUrl.includes("vektalnodes.in/earn")) {
+      log("[LINKPAYS] Not on earn page, navigating there first…");
+      const ok = await navigateToEarn(page);
+      if (!ok) return;
+    }
 
-    // Gather all visible links and buttons
-    const elements = await page.evaluate(() => {
-      const results = [];
+    log("[LINKPAYS] Scanning earn page for Open LinkPays button…");
+    updateStatus({ lastAction: "Looking for Open LinkPays button…" });
 
-      // <a> tags
-      document.querySelectorAll("a[href]").forEach((el) => {
-        const href = el.href || "";
-        const text = (el.innerText || el.textContent || "").trim().slice(0, 80);
-        const rect = el.getBoundingClientRect();
-        if (rect.width > 0 && rect.height > 0 && rect.top >= 0 && rect.top < window.innerHeight) {
-          results.push({ tag: "a", href, text, selector: null });
-        }
-      });
+    // Find the "Open LinkPays" submit button specifically
+    const linkPaysSelectors = [
+      'button.button.button-primary[type="submit"]',
+      'button.button-primary[type="submit"]',
+      'button[type="submit"]',
+    ];
 
-      // Buttons / earn-related elements
-      const btnSelectors = [
-        'button:not([disabled])',
-        '[class*="earn" i] button',
-        '[class*="claim" i] button',
-        '[class*="mine" i] button',
-        '[class*="pay" i] a',
-        '[class*="link" i] a',
-        '[class*="reward" i] a',
-        '[class*="bonus" i] a',
-      ];
-      for (const sel of btnSelectors) {
-        document.querySelectorAll(sel).forEach((el) => {
-          const text = (el.innerText || el.textContent || "").trim().slice(0, 80);
-          const rect = el.getBoundingClientRect();
-          if (rect.width > 0 && rect.height > 0 && rect.top >= 0 && rect.top < window.innerHeight) {
-            results.push({ tag: el.tagName.toLowerCase(), href: el.href || "", text, selector: sel });
-          }
-        });
-      }
-
-      return results.slice(0, 30); // cap at 30 targets per scan
-    });
-
-    log(`[LINK-CLICK] Found ${elements.length} clickable elements`);
-    pushNetworkEvent({
-      type: "scan",
-      ts: new Date().toISOString(),
-      pageUrl,
-      elementsFound: elements.length,
-      elements: elements.map(e => ({ tag: e.tag, href: e.href, text: e.text })),
-    });
-
-    for (let i = 0; i < elements.length; i++) {
-      const el = elements[i];
-
-      // Skip anchors that go offsite (not vektalnodes.in)
-      if (el.href && el.href.startsWith("http") && !el.href.includes("vektalnodes.in")) {
-        // Still record the external link
-        pushNetworkEvent({
-          type: "external-link",
-          ts: new Date().toISOString(),
-          href: el.href,
-          text: el.text,
-          tokenHints: extractTokenHints(el.href),
-        });
-        log(`[LINK-CLICK] External link found: ${el.href} — recorded but not followed`);
-        continue;
-      }
-
+    let btnFound = false;
+    for (const sel of linkPaysSelectors) {
       try {
-        log(`[LINK-CLICK] Clicking element ${i + 1}/${elements.length}: "${el.text}" → ${el.href || "(no href)"}`);
-        updateStatus({ lastAction: `Clicking: "${el.text}"` });
+        const btns = await page.$$(sel);
+        for (const btn of btns) {
+          const text = await btn.evaluate(el => (el.innerText || el.textContent || "").trim());
+          if (/open.*linkpays|linkpays/i.test(text)) {
+            log(`[LINKPAYS] Found button: "${text}" via selector ${sel}`);
+            btnFound = true;
 
-        // Open link in new tab to avoid losing the earn page
-        let result = null;
-        if (el.href && el.href.startsWith("http")) {
-          // Navigate in a new page context so we capture the full redirect chain
-          const browser = page.browser();
-          const newPage = await browser.newPage();
+            // Scroll button into view
+            await btn.evaluate(el => el.scrollIntoView({ behavior: "smooth", block: "center" }));
+            await sleep(800);
 
-          // Copy cookies from main page to new tab
-          const cookies = await page.cookies();
-          if (cookies.length) await newPage.setCookie(...cookies);
+            // Record click start + capture all cookies before
+            const cookiesBefore = await page.cookies();
+            const sessionBefore = cookiesBefore.filter(c =>
+              /token|session|auth|jwt|sid/i.test(c.name)
+            ).map(c => ({ name: c.name, value: c.value.slice(0, 40) + "…", domain: c.domain, httpOnly: c.httpOnly }));
 
-          // Attach network recorder to the new tab
-          attachNetworkRecorder(newPage);
-
-          try {
-            // Record start of click chain
             pushNetworkEvent({
               type: "click-start",
               ts: new Date().toISOString(),
-              href: el.href,
-              text: el.text,
-              pageUrl,
+              href: "",
+              text,
+              pageUrl: page.url(),
+              sessionBefore,
+            });
+            log(`[LINKPAYS] Clicking "${text}"…`);
+            updateStatus({ lastAction: `Clicking "${text}"…` });
+
+            // Listen for new pages (popups/new tabs) that the button might open
+            const browser = page.browser();
+            let newPageOpened = null;
+            const newPagePromise = new Promise((resolve) => {
+              browser.once("targetcreated", async (target) => {
+                if (target.type() === "page") {
+                  resolve(await target.page());
+                }
+              });
+              // Timeout: if no new tab opens within 10s, resolve with null
+              setTimeout(() => resolve(null), 10_000);
             });
 
-            await newPage.goto(el.href, { waitUntil: "networkidle2", timeout: 30_000 });
-            await sleep(2_000);
+            // Click the button
+            await btn.click();
+            await sleep(1_500);
 
-            const finalUrl = newPage.url();
-            const finalTokenHints = extractTokenHints(finalUrl);
+            // Check if a new tab opened
+            newPageOpened = await newPagePromise;
 
-            // Capture cookies from new page (may contain session tokens)
-            const newCookies = await newPage.cookies();
-            const sensitiveCookies = newCookies.filter(c =>
-              /token|session|auth|jwt|sid/i.test(c.name)
-            ).map(c => ({ name: c.name, domain: c.domain, path: c.path, httpOnly: c.httpOnly, secure: c.secure }));
+            if (newPageOpened) {
+              // New tab was opened — attach recorder and capture everything
+              attachNetworkRecorder(newPageOpened);
+              log("[LINKPAYS] New tab opened, waiting for page to load…");
+              updateStatus({ lastAction: "LinkPays tab opened, recording…" });
 
-            result = {
-              type: "click-result",
-              ts: new Date().toISOString(),
-              startUrl: el.href,
-              finalUrl,
-              tokenHints: finalTokenHints,
-              sensitiveCookies,
-            };
-            pushNetworkEvent(result);
-            log(`[LINK-CLICK] Result: ${el.href} → ${finalUrl}${finalTokenHints.length ? ` ⚑ ${finalTokenHints.map(t => t.type).join(", ")}` : ""}`);
-            if (sensitiveCookies.length) {
-              log(`[LINK-CLICK] Session cookies detected: ${sensitiveCookies.map(c => c.name).join(", ")}`);
+              await newPageOpened.waitForNavigation({ waitUntil: "networkidle2", timeout: 30_000 }).catch(() => {});
+              await sleep(2_000);
+
+              const finalUrl = newPageOpened.url();
+              const tokenHints = extractTokenHints(finalUrl);
+              const newCookies = await newPageOpened.cookies().catch(() => []);
+              const sensitiveCookies = newCookies.filter(c =>
+                /token|session|auth|jwt|sid/i.test(c.name)
+              ).map(c => ({ name: c.name, domain: c.domain, httpOnly: c.httpOnly, secure: c.secure }));
+
+              // Capture full page URL history via navigation events
+              const pageContent = await newPageOpened.evaluate(() => document.title).catch(() => "");
+
+              pushNetworkEvent({
+                type: "click-result",
+                ts: new Date().toISOString(),
+                startUrl: page.url(),
+                finalUrl,
+                pageTitle: pageContent,
+                tokenHints,
+                sensitiveCookies,
+                openedNewTab: true,
+              });
+
+              log(`[LINKPAYS] LinkPays tab final URL: ${finalUrl}${tokenHints.length ? ` ⚑ ${tokenHints.map(t => t.type).join(", ")}` : ""}`);
+              if (sensitiveCookies.length) {
+                log(`[LINKPAYS] Session cookies in new tab: ${sensitiveCookies.map(c => c.name).join(", ")}`);
+              }
+
+              // Keep the new tab open for 10s to capture async redirects
+              await sleep(10_000);
+              const laterUrl = newPageOpened.url();
+              if (laterUrl !== finalUrl) {
+                const laterHints = extractTokenHints(laterUrl);
+                pushNetworkEvent({
+                  type: "navigation",
+                  ts: new Date().toISOString(),
+                  url: laterUrl,
+                  tokenHints: laterHints,
+                  note: "post-load redirect",
+                });
+                log(`[LINKPAYS] Late redirect → ${laterUrl}`);
+              }
+
+              try { await newPageOpened.close(); } catch (_) {}
+            } else {
+              // No new tab — the click may have changed the current page
+              const afterUrl = page.url();
+              const tokenHints = extractTokenHints(afterUrl);
+              const cookiesAfter = await page.cookies();
+              const sensitiveCookies = cookiesAfter.filter(c =>
+                /token|session|auth|jwt|sid/i.test(c.name)
+              ).map(c => ({ name: c.name, domain: c.domain, httpOnly: c.httpOnly, secure: c.secure }));
+
+              pushNetworkEvent({
+                type: "click-result",
+                ts: new Date().toISOString(),
+                startUrl: pageUrl,
+                finalUrl: afterUrl,
+                tokenHints,
+                sensitiveCookies,
+                openedNewTab: false,
+              });
+              log(`[LINKPAYS] Same-page result URL: ${afterUrl}`);
+
+              // Navigate back to earn page if we left it
+              if (!afterUrl.includes("vektalnodes.in/earn")) {
+                await navigateToEarn(page);
+              }
             }
-          } finally {
-            try { await newPage.close(); } catch (_) {}
-          }
-        } else {
-          // Click in-page button
-          await page.click(el.selector || el.tag).catch(() => {});
-          await sleep(1_500);
-          const afterUrl = page.url();
-          pushNetworkEvent({
-            type: "click-result",
-            ts: new Date().toISOString(),
-            startUrl: pageUrl,
-            finalUrl: afterUrl,
-            tokenHints: extractTokenHints(afterUrl),
-            sensitiveCookies: [],
-          });
-          log(`[LINK-CLICK] In-page click done. Current URL: ${afterUrl}`);
-          // Return to earn page if we navigated away
-          if (!afterUrl.includes("vektalnodes.in/earn")) {
-            await navigateToEarn(page);
+
+            break; // only click the first matching button
           }
         }
+        if (btnFound) break;
       } catch (err) {
-        log(`[LINK-CLICK] Error clicking element: ${err.message}`);
-        pushNetworkEvent({ type: "click-error", ts: new Date().toISOString(), href: el.href, error: err.message });
+        log(`[LINKPAYS] Selector ${sel} error: ${err.message}`);
       }
-
-      await sleep(1_000);
     }
 
-    log(`[LINK-CLICK] Done. Returning to earn page.`);
-    const currentUrl = page.url();
-    if (!currentUrl.includes("vektalnodes.in/earn")) {
-      await navigateToEarn(page);
+    if (!btnFound) {
+      log("[LINKPAYS] Open LinkPays button not found on page — will retry next cycle.");
+      pushNetworkEvent({
+        type: "scan",
+        ts: new Date().toISOString(),
+        pageUrl: page.url(),
+        elementsFound: 0,
+        note: "Open LinkPays button not found",
+      });
     }
   } catch (err) {
-    log(`[LINK-CLICK] Outer error: ${err.message}`);
+    log(`[LINKPAYS] Outer error: ${err.message}`);
+    pushNetworkEvent({ type: "click-error", ts: new Date().toISOString(), href: "", error: err.message });
   }
 }
 
