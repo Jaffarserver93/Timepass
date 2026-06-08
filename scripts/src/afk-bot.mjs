@@ -313,7 +313,7 @@ async function run() {
       const page = launched.page;
       currentPage = page;
 
-      await page.setViewport({ width: 1280, height: 800 });
+      await page.setViewport({ width: 1280, height: 720 });
       await doLogin(page);
 
       const onEarnPage = await navigateToEarn(page);

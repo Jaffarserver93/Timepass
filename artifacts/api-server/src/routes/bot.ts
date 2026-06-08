@@ -201,23 +201,36 @@ router.get("/dashboard", (_req, res) => {
 
     .screenshot-wrap {
       flex: 1;
+      position: relative;
+      overflow: auto;
+      background: #000;
       display: flex;
       align-items: center;
       justify-content: center;
-      overflow: hidden;
-      padding: 10px;
     }
-    @media (max-width: 768px) {
-      .screenshot-wrap { padding: 8px; min-height: 200px; max-height: 52vw; }
+
+    /* 16:9 container that scales to fit the pane */
+    .screenshot-inner {
+      position: relative;
+      width: 100%;
+      /* enforce 16:9 — matches 1280×720 viewport */
+      aspect-ratio: 16 / 9;
+      max-width: 100%;
+      flex-shrink: 0;
     }
 
     #screenshot {
-      max-width: 100%;
-      max-height: 100%;
-      object-fit: contain;
-      border-radius: 5px;
-      border: 1px solid var(--border);
-      box-shadow: 0 0 30px rgba(0,0,0,0.8);
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: fill; /* pixel-perfect: no letterboxing */
+      display: block;
+    }
+
+    @media (max-width: 768px) {
+      .screenshot-wrap { overflow: hidden; }
+      .screenshot-inner { width: 100%; }
     }
 
     #no-screenshot { text-align: center; color: #27272a; }
@@ -414,12 +427,14 @@ router.get("/dashboard", (_req, res) => {
       <span id="img-size" style="margin-left:auto;">—</span>
     </div>
     <div class="screenshot-wrap">
-      <div id="no-screenshot">
-        <div style="font-size:28px;color:#1e1e2e;">⬛</div>
-        <p>Waiting for screenshot…</p>
-        <p style="color:var(--muted);font-size:10px;margin-top:4px;">Bot is starting up</p>
+      <div class="screenshot-inner">
+        <div id="no-screenshot" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#27272a;">
+          <div style="font-size:36px;">⬛</div>
+          <p style="font-size:13px;margin-top:10px;">Waiting for screenshot…</p>
+          <p style="color:var(--muted);font-size:11px;margin-top:5px;">Bot is starting up</p>
+        </div>
+        <img id="screenshot" style="display:none;" alt="Bot view" />
       </div>
-      <img id="screenshot" style="display:none;" alt="Bot view" />
     </div>
   </div>
 
