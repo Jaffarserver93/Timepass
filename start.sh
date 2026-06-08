@@ -200,7 +200,7 @@ kill_port() {
   if command -v ss &>/dev/null; then
     local ss_pids
     ss_pids=$(ss -lptn "sport = :${port}" 2>/dev/null \
-      | awk 'match($0, /pid=([0-9]+)/, a) {print a[1]}')
+      | awk 'match($0, /pid=[0-9]+/) { print substr($0, RSTART+4, RLENGTH-4) }')
     if [ -n "$ss_pids" ]; then
       # shellcheck disable=SC2086
       kill -9 $ss_pids 2>/dev/null && killed=true
