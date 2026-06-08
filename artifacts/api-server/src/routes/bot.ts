@@ -15,7 +15,7 @@ function readJsonFile(path: string, fallback: unknown): unknown {
   }
 }
 
-// ── Screenshot endpoint ───────────────────────────────────────────────────────
+// ── Screenshot endpoint (single frame) ───────────────────────────────────────
 router.get("/bot/screenshot", (_req, res) => {
   if (!fs.existsSync(SCREENSHOT_FILE)) {
     res.status(404).json({ error: "No screenshot yet — bot may still be starting up." });
@@ -26,6 +26,43 @@ router.get("/bot/screenshot", (_req, res) => {
   res.set("Cache-Control", "no-store, no-cache, must-revalidate");
   res.set("Pragma", "no-cache");
   res.send(img);
+});
+
+// ── MJPEG stream endpoint — one connection, server pushes frames ──────────────
+const BOUNDARY = "botframe";
+const STREAM_INTERVAL_MS = 200; // 5 fps — smooth with minimal CPU
+
+router.get("/bot/stream", (req, res) => {
+  res.set({
+    "Content-Type": `multipart/x-mixed-replace; boundary=${BOUNDARY}`,
+    "Cache-Control": "no-cache, no-store",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+
+  let lastSize = 0;
+
+  const timer = setInterval(() => {
+    if (!fs.existsSync(SCREENSHOT_FILE)) return;
+    try {
+      const stat = fs.statSync(SCREENSHOT_FILE);
+      // Only read + send if the file changed since last frame
+      if (stat.size === 0) return;
+      const img = fs.readFileSync(SCREENSHOT_FILE);
+      const header =
+        `--${BOUNDARY}\r\n` +
+        `Content-Type: image/png\r\n` +
+        `Content-Length: ${img.length}\r\n` +
+        `\r\n`;
+      res.write(header);
+      res.write(img);
+      res.write("\r\n");
+      lastSize = stat.size;
+    } catch (_) {}
+  }, STREAM_INTERVAL_MS);
+
+  req.on("close", () => clearInterval(timer));
+  req.on("error", () => clearInterval(timer));
 });
 
 // ── Status endpoint ───────────────────────────────────────────────────────────
@@ -407,7 +444,7 @@ router.get("/dashboard", (_req, res) => {
   <span class="header-title">Bot Dashboard</span>
   <span class="header-url">vektalnodes.in/earn</span>
   <div class="header-right">
-    <span class="refresh-badge">⚡ 100ms</span>
+    <span class="refresh-badge">⚡ STREAM</span>
     <span id="clock">—</span>
   </div>
 </header>
@@ -423,7 +460,7 @@ router.get("/dashboard", (_req, res) => {
   <div class="preview-pane active" id="tab-preview">
     <div class="preview-toolbar">
       <span>LIVE PREVIEW</span>
-      <span id="live-fps">— fps</span>
+      <span id="stream-badge" style="color:var(--muted);">CONNECTING…</span>
       <span id="img-size" style="margin-left:auto;">—</span>
     </div>
     <div class="screenshot-wrap">
@@ -433,7 +470,7 @@ router.get("/dashboard", (_req, res) => {
           <p style="font-size:13px;margin-top:10px;">Waiting for screenshot…</p>
           <p style="color:var(--muted);font-size:11px;margin-top:5px;">Bot is starting up</p>
         </div>
-        <img id="screenshot" style="display:none;" alt="Bot view" />
+        <img id="screenshot" src="/api/bot/stream" style="display:none;" alt="Bot view" />
       </div>
     </div>
   </div>
@@ -498,11 +535,32 @@ router.get("/dashboard", (_req, res) => {
     document.getElementById('tab-logs').classList.toggle('active', tab === 'logs');
   }
 
-  // ── Helpers ─────────────────────────────────────────────────
-  let fpsFrames = 0;
-  let lastFpsTs = Date.now();
-  let firstScreenshot = false;
+  // ── MJPEG stream visibility ──────────────────────────────────
+  const streamImg = document.getElementById('screenshot');
+  const noScreenshot = document.getElementById('no-screenshot');
+  const streamBadge = document.getElementById('stream-badge');
+  let streamShown = false;
 
+  function showStream() {
+    if (streamShown) return;
+    streamShown = true;
+    noScreenshot.style.display = 'none';
+    streamImg.style.display = '';
+    streamBadge.textContent = '● LIVE';
+    streamBadge.style.color = 'var(--green)';
+    // capture dimensions once visible
+    requestAnimationFrame(() => {
+      if (streamImg.naturalWidth > 0) {
+        document.getElementById('img-size').textContent =
+          streamImg.naturalWidth + '×' + streamImg.naturalHeight;
+      }
+    });
+  }
+
+  // When the browser receives the first frame it fires 'load'
+  streamImg.addEventListener('load', showStream);
+
+  // ── Helpers ─────────────────────────────────────────────────
   function fmtUptime(s) {
     const h = Math.floor(s / 3600);
     const m = Math.floor((s % 3600) / 60);
@@ -516,32 +574,6 @@ router.get("/dashboard", (_req, res) => {
   setInterval(() => {
     document.getElementById('clock').textContent = new Date().toLocaleTimeString();
   }, 1000);
-
-  // ── Screenshot — every 100ms ──────────────────────────────────
-  function refreshScreenshot() {
-    const ts = Date.now();
-    const tmp = new Image();
-    tmp.onload = () => {
-      const el = document.getElementById('screenshot');
-      el.src = tmp.src;
-      if (!firstScreenshot) {
-        firstScreenshot = true;
-        document.getElementById('no-screenshot').style.display = 'none';
-        el.style.display = '';
-      }
-      fpsFrames++;
-      const now = Date.now();
-      if (now - lastFpsTs >= 1000) {
-        const fps = Math.round(fpsFrames * 1000 / (now - lastFpsTs));
-        document.getElementById('live-fps').textContent = fps + ' fps';
-        document.getElementById('img-size').textContent = tmp.naturalWidth + '×' + tmp.naturalHeight;
-        fpsFrames = 0;
-        lastFpsTs = now;
-      }
-    };
-    tmp.src = '/api/bot/screenshot?t=' + ts;
-  }
-  setInterval(refreshScreenshot, 100);
 
   // ── Status — every 600ms ──────────────────────────────────────
   const stateLabels = {

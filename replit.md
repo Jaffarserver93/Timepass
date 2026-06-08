@@ -45,7 +45,7 @@ Set these in the Replit Secrets tab:
 
 ## Product
 
-- Dashboard at `/api/dashboard` shows live bot state, browser screenshot (refreshed every 100ms), and recent logs
+- Dashboard at `/api/dashboard` shows live bot state, browser screenshot via MJPEG stream (one persistent connection, 5 fps, minimal CPU/RAM), and recent logs
 - Bot auto-retries up to 10 times on failure; handles session expiry with automatic re-login
 
 ## User preferences
