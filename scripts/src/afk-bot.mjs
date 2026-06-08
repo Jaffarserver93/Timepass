@@ -70,16 +70,36 @@ setInterval(async () => {
 }, SCREENSHOT_INTERVAL_MS);
 
 // Uptime ticker
-setInterval(() => {
-  updateStatus({});
-}, 5_000);
+setInterval(() => { updateStatus({}); }, 5_000);
 
 // ── Browser launch ────────────────────────────────────────────────────────────
 function findChromiumPath() {
-  try {
-    const p = execSync("which chromium", { encoding: "utf8" }).trim();
-    if (p) return p;
-  } catch (_) {}
+  // Check each candidate binary in order — covers Replit (nix), Ubuntu, snap, and Google Chrome
+  const candidates = [
+    "chromium",
+    "chromium-browser",
+    "google-chrome-stable",
+    "google-chrome",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/google-chrome",
+    "/snap/bin/chromium",
+    "/opt/google/chrome/google-chrome",
+  ];
+
+  for (const bin of candidates) {
+    try {
+      if (bin.startsWith("/")) {
+        if (fs.existsSync(bin)) return bin;
+      } else {
+        const p = execSync(`which ${bin} 2>/dev/null`, { encoding: "utf8" }).trim();
+        if (p) return p;
+      }
+    } catch (_) {}
+  }
+
+  // Last-resort: search nix store (Replit only)
   try {
     const p = execSync(
       "find /nix/store -name 'chromium' -type f 2>/dev/null | grep '/bin/chromium$' | head -1",
@@ -87,13 +107,18 @@ function findChromiumPath() {
     ).trim();
     if (p) return p;
   } catch (_) {}
+
   return null;
 }
 
 async function launchBrowser() {
   const chromePath = findChromiumPath();
-  if (!chromePath) throw new Error("Chromium binary not found.");
-  log(`Using Chromium at: ${chromePath}`);
+  if (!chromePath) {
+    throw new Error(
+      "No Chromium/Chrome binary found. Install chromium-browser or google-chrome-stable."
+    );
+  }
+  log(`Using browser at: ${chromePath}`);
 
   const { browser, page } = await connect({
     headless: true,

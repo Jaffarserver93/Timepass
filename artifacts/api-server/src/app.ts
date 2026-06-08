@@ -29,6 +29,10 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Convenience redirects — both / and /dashboard point to the dashboard
+app.get("/", (_req, res) => { res.redirect("/api/dashboard"); });
+app.get("/dashboard", (_req, res) => { res.redirect("/api/dashboard"); });
+
 app.use("/api", router);
 
 export default app;
