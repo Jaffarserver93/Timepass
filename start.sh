@@ -2,6 +2,7 @@
 # ============================================================
 #  start.sh — Install dependencies & start all services
 #  Tested on Ubuntu 20.04 / 22.04 / 24.04
+#  Run as root or a user with package-install privileges.
 # ============================================================
 set -euo pipefail
 
@@ -45,11 +46,10 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 
 # Core tools
-apt-get install -y -qq curl wget gnupg ca-certificates lsb-release
+apt-get install -y -qq curl wget gnupg ca-certificates lsb-release apt-transport-https
 
-# Chromium & its runtime libraries
+# Xvfb and X11 runtime libraries needed by Chrome
 apt-get install -y -qq \
-  chromium-browser \
   xvfb \
   libx11-xcb1 \
   libxcomposite1 \
@@ -74,6 +74,28 @@ apt-get install -y -qq \
   xdg-utils 2>/dev/null || true
 
 success "System packages ready"
+
+# ── Google Chrome Stable ──────────────────────────────────────
+# We install the real .deb from Google — NOT snap chromium-browser.
+# Ubuntu ≥22.04's /usr/bin/chromium-browser is a snap wrapper that
+# cannot forward --remote-debugging-port, causing ECONNREFUSED errors.
+step "Installing Google Chrome Stable"
+
+if command -v google-chrome-stable &>/dev/null || command -v google-chrome &>/dev/null; then
+  CHROME_VER=$(google-chrome-stable --version 2>/dev/null || google-chrome --version 2>/dev/null)
+  success "Google Chrome already installed: ${CHROME_VER}"
+else
+  info "Adding Google apt repo…"
+  wget -q -O /tmp/google-chrome.gpg https://dl.google.com/linux/linux_signing_key.pub
+  gpg --dearmor < /tmp/google-chrome.gpg > /usr/share/keyrings/google-chrome-keyring.gpg
+  echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome-keyring.gpg] \
+    https://dl.google.com/linux/chrome/deb/ stable main" \
+    > /etc/apt/sources.list.d/google-chrome.list
+  apt-get update -qq
+  apt-get install -y -qq google-chrome-stable
+  CHROME_VER=$(google-chrome-stable --version 2>/dev/null)
+  success "Installed: ${CHROME_VER}"
+fi
 
 # ── Node.js ───────────────────────────────────────────────────
 step "Checking Node.js"
@@ -110,40 +132,45 @@ success "API server built"
 
 # ── PID tracking ─────────────────────────────────────────────
 PIDS=()
+XVFB_PID=""
 
 cleanup() {
   echo -e "\n${YELLOW}Shutting down…${NC}"
   for pid in "${PIDS[@]}"; do
     kill "$pid" 2>/dev/null || true
   done
-  # Kill Xvfb if we started it
-  if [ -n "${XVFB_PID:-}" ]; then
-    kill "$XVFB_PID" 2>/dev/null || true
-  fi
+  [ -n "$XVFB_PID" ] && kill "$XVFB_PID" 2>/dev/null || true
   echo -e "${GREEN}All services stopped.${NC}"
   exit 0
 }
 trap cleanup SIGINT SIGTERM
 
 # ── Xvfb virtual display ──────────────────────────────────────
-step "Starting Xvfb (virtual display)"
+step "Starting Xvfb (virtual display for Chrome)"
 
 DISPLAY_NUM=99
-if ! pgrep -x Xvfb &>/dev/null; then
-  Xvfb ":${DISPLAY_NUM}" -screen 0 1280x800x24 &
+if pgrep -x Xvfb &>/dev/null; then
+  success "Xvfb already running"
+else
+  Xvfb ":${DISPLAY_NUM}" -screen 0 1280x800x24 -ac &
   XVFB_PID=$!
   sleep 1
-  success "Xvfb started on :${DISPLAY_NUM} (PID ${XVFB_PID})"
-else
-  success "Xvfb already running"
+  if kill -0 "$XVFB_PID" 2>/dev/null; then
+    success "Xvfb started on :${DISPLAY_NUM} (PID ${XVFB_PID})"
+  else
+    warn "Xvfb failed to start — Chrome will try to manage its own display"
+    DISPLAY_NUM=""
+  fi
 fi
-export DISPLAY=":${DISPLAY_NUM}"
+
+[ -n "$DISPLAY_NUM" ] && export DISPLAY=":${DISPLAY_NUM}"
 
 # ── API server ────────────────────────────────────────────────
 step "Starting API + Dashboard server"
 
-LOG_API="logs/api-server.log"
 mkdir -p logs
+LOG_API="logs/api-server.log"
+
 PORT="${PORT}" \
 EMAIL="${EMAIL}" \
 PASSWORD="${PASSWORD}" \
@@ -154,7 +181,7 @@ PIDS+=("$API_PID")
 sleep 2
 
 if kill -0 "$API_PID" 2>/dev/null; then
-  success "API server running (PID ${API_PID}) — log: ${LOG_API}"
+  success "API server running (PID ${API_PID}) → log: ${LOG_API}"
 else
   err "API server failed to start. Check ${LOG_API}"
 fi
@@ -163,9 +190,10 @@ fi
 step "Starting AFK Bot"
 
 LOG_BOT="logs/afk-bot.log"
+
 EMAIL="${EMAIL}" \
 PASSWORD="${PASSWORD}" \
-DISPLAY=":${DISPLAY_NUM}" \
+${DISPLAY:+DISPLAY="${DISPLAY}"} \
   pnpm --filter @workspace/scripts run afk-bot >> "${LOG_BOT}" 2>&1 &
 
 BOT_PID=$!
@@ -173,7 +201,7 @@ PIDS+=("$BOT_PID")
 sleep 2
 
 if kill -0 "$BOT_PID" 2>/dev/null; then
-  success "AFK bot running (PID ${BOT_PID}) — log: ${LOG_BOT}"
+  success "AFK bot running (PID ${BOT_PID}) → log: ${LOG_BOT}"
 else
   err "AFK bot failed to start. Check ${LOG_BOT}"
 fi
@@ -200,8 +228,7 @@ tail -f "${LOG_BOT}" &
 TAIL_PID=$!
 PIDS+=("$TAIL_PID")
 
-# Wait for any process to exit unexpectedly
+# Wait for any service to exit unexpectedly
 wait -n "${API_PID}" "${BOT_PID}" 2>/dev/null || true
-
 echo -e "\n${RED}A service exited unexpectedly.${NC}"
 cleanup

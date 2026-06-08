@@ -1,6 +1,6 @@
 /**
  * AFK Bot for vektalnodes.in/earn
- * Uses puppeteer-real-browser with Chromium to avoid detection.
+ * Uses puppeteer-real-browser with Chromium/Chrome to avoid detection.
  * Credentials are read from EMAIL and PASSWORD environment variables.
  * Saves screenshots + status to /tmp/ so the API dashboard can display them.
  */
@@ -73,18 +73,30 @@ setInterval(async () => {
 setInterval(() => { updateStatus({}); }, 5_000);
 
 // ── Browser launch ────────────────────────────────────────────────────────────
+
+/**
+ * Find the best available Chrome/Chromium binary.
+ * Prefers google-chrome-stable (.deb install) over snap chromium-browser.
+ * The snap wrapper at /usr/bin/chromium-browser does NOT properly forward
+ * --remote-debugging-port, causing ECONNREFUSED. Always prefer a real .deb.
+ */
 function findChromiumPath() {
-  // Check each candidate binary in order — covers Replit (nix), Ubuntu, snap, and Google Chrome
   const candidates = [
-    "chromium",
-    "chromium-browser",
+    // Real .deb Google Chrome — most reliable on Ubuntu
     "google-chrome-stable",
     "google-chrome",
+    // Nix-store chromium (Replit)
+    "chromium",
+    // Debian/Ubuntu apt chromium (real .deb, not snap — Ubuntu <22.04)
     "/usr/bin/chromium",
-    "/usr/bin/chromium-browser",
+    // Absolute paths for .deb Chrome
     "/usr/bin/google-chrome-stable",
     "/usr/bin/google-chrome",
+    // Snap chromium — last resort (may cause ECONNREFUSED on Ubuntu ≥22.04)
+    "chromium-browser",
+    "/usr/bin/chromium-browser",
     "/snap/bin/chromium",
+    // Linux generic
     "/opt/google/chrome/google-chrome",
   ];
 
@@ -115,13 +127,26 @@ async function launchBrowser() {
   const chromePath = findChromiumPath();
   if (!chromePath) {
     throw new Error(
-      "No Chromium/Chrome binary found. Install chromium-browser or google-chrome-stable."
+      "No Chrome/Chromium binary found.\n" +
+      "Install google-chrome-stable: run start.sh or follow the README."
     );
   }
   log(`Using browser at: ${chromePath}`);
 
+  // If DISPLAY is already set (e.g. start.sh exported it), reuse it.
+  // Otherwise let puppeteer-real-browser spawn its own Xvfb.
+  const hasDisplay = !!process.env.DISPLAY;
+  if (!hasDisplay) {
+    log("No DISPLAY set — puppeteer-real-browser will manage Xvfb");
+  } else {
+    log(`Using existing display: ${process.env.DISPLAY}`);
+  }
+
   const { browser, page } = await connect({
     headless: true,
+    // disableXvfb: true  → use the DISPLAY already exported by start.sh
+    // disableXvfb: false → let puppeteer-real-browser spawn its own Xvfb
+    disableXvfb: hasDisplay,
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox",
@@ -132,13 +157,14 @@ async function launchBrowser() {
       "--disable-background-timer-throttling",
       "--disable-backgrounding-occluded-windows",
       "--disable-renderer-backgrounding",
+      "--disable-features=IsolateOrigins,site-per-process",
+      "--disable-site-isolation-trials",
       "--window-size=1280,800",
     ],
     executablePath: chromePath,
     customConfig: {},
     turnstile: true,
     connectOption: {},
-    disableXvfb: false,
   });
 
   return { browser, page };
@@ -188,10 +214,7 @@ async function doLogin(page) {
   await page.type(passwordInput, PASSWORD, { delay: 80 });
   await sleep(500);
 
-  const submitSelectors = [
-    'button[type="submit"]',
-    'input[type="submit"]',
-  ];
+  const submitSelectors = ['button[type="submit"]', 'input[type="submit"]'];
   let submitted = false;
   for (const sel of submitSelectors) {
     try { await page.click(sel); submitted = true; log(`Clicked submit: ${sel}`); break; } catch (_) {}
@@ -247,12 +270,9 @@ async function keepAlive(page) {
     await page.mouse.move(x, y, { steps: 10 });
 
     const claimSelectors = [
-      '[class*="claim" i] button',
-      '[class*="earn" i] button',
-      '[class*="mine" i] button',
-      '[id*="claim" i]',
-      'button[class*="claim" i]',
-      'button[class*="earn" i]',
+      '[class*="claim" i] button', '[class*="earn" i] button',
+      '[class*="mine" i] button',  '[id*="claim" i]',
+      'button[class*="claim" i]',  'button[class*="earn" i]',
     ];
     for (const sel of claimSelectors) {
       try {
@@ -294,7 +314,6 @@ async function run() {
       currentPage = page;
 
       await page.setViewport({ width: 1280, height: 800 });
-
       await doLogin(page);
 
       const onEarnPage = await navigateToEarn(page);
@@ -314,7 +333,6 @@ async function run() {
 
       while (true) {
         await sleep(KEEPALIVE_INTERVAL_MS);
-
         const url = page.url();
         if (url.includes("login") || url.includes("signin")) {
           log("Session expired — re-logging in…");
@@ -323,7 +341,6 @@ async function run() {
           const back = await navigateToEarn(page);
           if (!back) throw new Error("Could not re-navigate to earn page after re-login.");
         }
-
         await keepAlive(page);
       }
     } catch (err) {
