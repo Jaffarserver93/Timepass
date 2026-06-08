@@ -5,7 +5,12 @@
   "type": "module",
   "scripts": {
     "hello": "tsx ./src/hello.ts",
+    "afk-bot": "node ./src/afk-bot.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "puppeteer-core": "^23.11.1",
+    "puppeteer-real-browser": "^1.4.4"
   },
   "devDependencies": {
     "@types/node": "catalog:",
