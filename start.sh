@@ -42,13 +42,13 @@ PORT="${PORT:-25515}"
 step "Installing system dependencies"
 
 export DEBIAN_FRONTEND=noninteractive
-sudo apt-get update -qq
+apt-get update -qq
 
 # Core tools
-sudo apt-get install -y -qq curl wget gnupg ca-certificates lsb-release
+apt-get install -y -qq curl wget gnupg ca-certificates lsb-release
 
 # Chromium & its runtime libraries
-sudo apt-get install -y -qq \
+apt-get install -y -qq \
   chromium-browser \
   xvfb \
   libx11-xcb1 \
@@ -80,8 +80,8 @@ step "Checking Node.js"
 
 if ! command -v node &>/dev/null; then
   info "Node.js not found — installing Node.js 20 via NodeSource"
-  curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - >/dev/null
-  sudo apt-get install -y -qq nodejs
+  curl -fsSL https://deb.nodesource.com/setup_20.x | bash - >/dev/null
+  apt-get install -y -qq nodejs
 fi
 
 NODE_VER=$(node --version)
@@ -92,7 +92,7 @@ step "Checking pnpm"
 
 if ! command -v pnpm &>/dev/null; then
   info "pnpm not found — installing via npm"
-  sudo npm install -g pnpm --quiet
+  npm install -g pnpm --quiet
 fi
 
 PNPM_VER=$(pnpm --version)
