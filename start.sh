@@ -171,6 +171,12 @@ step "Starting API + Dashboard server"
 mkdir -p logs
 LOG_API="logs/api-server.log"
 
+# Kill any existing process on the port before starting
+if fuser -k "${PORT}/tcp" &>/dev/null 2>&1; then
+  warn "Killed existing process on port ${PORT}"
+  sleep 1
+fi
+
 PORT="${PORT}" \
 EMAIL="${EMAIL}" \
 PASSWORD="${PASSWORD}" \
