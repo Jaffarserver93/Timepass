@@ -3,9 +3,10 @@ import fs from "fs";
 
 const router: IRouter = Router();
 
-const SCREENSHOT_FILE = "/tmp/bot-screenshot.png";
-const STATUS_FILE = "/tmp/bot-status.json";
-const LOGS_FILE = "/tmp/bot-logs.json";
+const SCREENSHOT_FILE    = "/tmp/bot-screenshot.png";
+const STATUS_FILE        = "/tmp/bot-status.json";
+const LOGS_FILE          = "/tmp/bot-logs.json";
+const NETWORK_LOG_FILE   = "/tmp/bot-network-log.json";
 
 function readJsonFile(path: string, fallback: unknown): unknown {
   try {
@@ -75,6 +76,12 @@ router.get("/bot/status", (_req, res) => {
 router.get("/bot/logs", (_req, res) => {
   const logs = readJsonFile(LOGS_FILE, []);
   res.json(logs);
+});
+
+// ── Network log endpoint ───────────────────────────────────────────────────────
+router.get("/bot/network-log", (_req, res) => {
+  const events = readJsonFile(NETWORK_LOG_FILE, []);
+  res.json(events);
 });
 
 // ── Dashboard HTML ────────────────────────────────────────────────────────────
@@ -426,6 +433,69 @@ router.get("/dashboard", (_req, res) => {
     }
     @media (max-width: 768px) { footer { font-size: 10px; padding: 7px 14px; } }
 
+    /* ── Network pane ── */
+    .network-pane {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      min-height: 0;
+    }
+    @media (max-width: 768px) {
+      .network-pane { min-height: 260px; max-height: 420px; }
+    }
+    .network-header {
+      padding: 10px 16px 6px;
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border2);
+      flex-shrink: 0;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    #net-count { color: #27272a; }
+    #net-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 4px 0;
+      -webkit-overflow-scrolling: touch;
+    }
+    #net-list::-webkit-scrollbar { width: 4px; }
+    #net-list::-webkit-scrollbar-thumb { background: #27272a; border-radius: 2px; }
+
+    .net-event {
+      padding: 5px 14px;
+      border-bottom: 1px solid #0f0f18;
+      font-size: 9px;
+      line-height: 1.5;
+      word-break: break-all;
+    }
+    .net-event .net-type {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 8px;
+      font-weight: bold;
+      letter-spacing: 0.06em;
+      margin-right: 5px;
+    }
+    .net-type-request    { background: #1e3a5f; color: var(--blue); }
+    .net-type-response   { background: #052e16; color: var(--green); }
+    .net-type-navigation { background: #1c0f2e; color: var(--purple); }
+    .net-type-scan       { background: #1c1300; color: var(--amber); }
+    .net-type-click-start  { background: #1c1300; color: var(--amber); }
+    .net-type-click-result { background: #052e16; color: var(--green); }
+    .net-type-click-error  { background: #2d0a0a; color: var(--red); }
+    .net-type-external-link { background: #18181b; color: var(--muted2); }
+    .net-event .net-url { color: var(--blue); font-size: 9px; }
+    .net-event .net-token { color: #f59e0b; font-size: 8px; }
+    .net-event .net-cookie { color: #a78bfa; font-size: 8px; }
+    .net-event .net-redirect { color: #4ade80; font-size: 8px; }
+    .net-event .net-body { color: #52525b; font-size: 8px; margin-top: 2px; white-space: pre-wrap; }
+
     /* ── Mobile panel visibility controlled by tabs ── */
     @media (max-width: 768px) {
       .panel-section { display: none; }
@@ -434,6 +504,8 @@ router.get("/dashboard", (_req, res) => {
       .preview-pane.active { display: flex; }
       .logs-pane { display: none; }
       .logs-pane.active { display: flex; }
+      .network-pane { display: none; }
+      .network-pane.active { display: flex; }
     }
   </style>
 </head>
@@ -453,6 +525,7 @@ router.get("/dashboard", (_req, res) => {
   <button class="tab-btn active" onclick="switchTab('preview')">📺 Preview</button>
   <button class="tab-btn" onclick="switchTab('status')">📊 Status</button>
   <button class="tab-btn" onclick="switchTab('logs')">📋 Logs</button>
+  <button class="tab-btn" onclick="switchTab('network')">🌐 Network</button>
 </div>
 
 <main>
@@ -516,6 +589,15 @@ router.get("/dashboard", (_req, res) => {
       </div>
       <div id="log-list"></div>
     </div>
+
+    <!-- Network -->
+    <div class="network-pane panel-section" id="tab-network">
+      <div class="network-header">
+        <span>Network / Redirects</span>
+        <span id="net-count">—</span>
+      </div>
+      <div id="net-list"></div>
+    </div>
   </div>
 </main>
 
@@ -526,13 +608,15 @@ router.get("/dashboard", (_req, res) => {
 
 <script>
   // ── Tab switching (mobile only) ─────────────────────────────
+  const TABS = ['preview','status','logs','network'];
   function switchTab(tab) {
     document.querySelectorAll('.tab-btn').forEach((b, i) => {
-      b.classList.toggle('active', ['preview','status','logs'][i] === tab);
+      b.classList.toggle('active', TABS[i] === tab);
     });
-    document.getElementById('tab-preview').classList.toggle('active', tab === 'preview');
-    document.getElementById('tab-status').classList.toggle('active', tab === 'status');
-    document.getElementById('tab-logs').classList.toggle('active', tab === 'logs');
+    TABS.forEach(t => {
+      const el = document.getElementById('tab-' + t);
+      if (el) el.classList.toggle('active', t === tab);
+    });
   }
 
   // ── MJPEG stream visibility ──────────────────────────────────
@@ -629,6 +713,77 @@ router.get("/dashboard", (_req, res) => {
   }
   setInterval(refreshLogs, 1200);
   refreshLogs();
+
+  // ── Network log — every 2000ms ────────────────────────────────
+  function esc(s) { return String(s || '').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+  function renderNetEvent(ev) {
+    const type = ev.type || 'unknown';
+    const typeClass = 'net-type-' + type.replace(/[^a-z-]/g,'');
+    let html = '<div class="net-event">';
+    html += '<span class="net-type ' + typeClass + '">' + esc(type.toUpperCase()) + '</span>';
+    html += '<span style="color:#3f3f46;font-size:8px;">' + esc((ev.ts||'').slice(11,19)) + '</span>';
+
+    if (ev.type === 'scan') {
+      html += '<br><span style="color:#71717a;">Found ' + (ev.elementsFound||0) + ' elements on ' + esc(ev.pageUrl) + '</span>';
+      if (ev.elements && ev.elements.length) {
+        html += '<br>' + ev.elements.slice(0,5).map(e =>
+          '<span style="color:#3f3f46;">  · ' + esc(e.tag) + ' ' + esc(e.text || e.href || '') + '</span>'
+        ).join('<br>');
+        if (ev.elements.length > 5) html += '<br><span style="color:#3f3f46;">  … +' + (ev.elements.length-5) + ' more</span>';
+      }
+    } else if (ev.type === 'navigation') {
+      html += '<br><span class="net-url">' + esc(ev.url) + '</span>';
+    } else if (ev.type === 'request') {
+      html += '<span style="color:#52525b;"> ' + esc(ev.method) + '</span>';
+      html += '<br><span class="net-url">' + esc(ev.url) + '</span>';
+    } else if (ev.type === 'response') {
+      const statusColor = ev.status >= 400 ? '#ef4444' : ev.isRedirect ? '#f59e0b' : '#22c55e';
+      html += '<span style="color:' + statusColor + ';"> ' + esc(ev.status) + '</span>';
+      html += '<br><span class="net-url">' + esc(ev.url) + '</span>';
+      if (ev.redirectTo) html += '<br><span class="net-redirect">→ ' + esc(ev.redirectTo) + '</span>';
+      if (ev.headers && ev.headers['set-cookie']) html += '<br><span class="net-cookie">🍪 set-cookie: ' + esc(ev.headers['set-cookie']).slice(0,80) + '</span>';
+      if (ev.body) html += '<br><span class="net-body">' + esc(ev.body.slice(0,200)) + '</span>';
+    } else if (ev.type === 'click-start') {
+      html += '<br><span style="color:#a1a1aa;">Clicking: ' + esc(ev.text) + '</span>';
+      html += '<br><span class="net-url">' + esc(ev.href) + '</span>';
+    } else if (ev.type === 'click-result') {
+      html += '<br><span class="net-url">' + esc(ev.startUrl) + '</span>';
+      if (ev.finalUrl !== ev.startUrl) html += '<br><span class="net-redirect">→ ' + esc(ev.finalUrl) + '</span>';
+      if (ev.sensitiveCookies && ev.sensitiveCookies.length) {
+        html += '<br><span class="net-cookie">🍪 ' + ev.sensitiveCookies.map(c => esc(c.name)).join(', ') + '</span>';
+      }
+    } else if (ev.type === 'external-link') {
+      html += '<br><span class="net-url">' + esc(ev.href) + '</span>';
+      if (ev.text) html += ' <span style="color:#52525b;">' + esc(ev.text) + '</span>';
+    } else if (ev.type === 'click-error') {
+      html += '<br><span style="color:#ef4444;">' + esc(ev.error) + '</span>';
+    }
+
+    // Token hints — the most important data
+    const hints = ev.tokenHints || [];
+    if (hints.length) {
+      html += '<br>' + [...new Set(hints.map(h => h.type))].map(t =>
+        '<span class="net-token">⚑ ' + esc(t) + '</span>'
+      ).join(' ');
+    }
+
+    html += '</div>';
+    return html;
+  }
+
+  async function refreshNetworkLog() {
+    try {
+      const r = await fetch('/api/bot/network-log');
+      if (!r.ok) return;
+      const events = await r.json();
+      document.getElementById('net-count').textContent = events.length + ' events';
+      const latest = events.slice(-60).reverse();
+      document.getElementById('net-list').innerHTML = latest.map(renderNetEvent).join('');
+    } catch (_) {}
+  }
+  setInterval(refreshNetworkLog, 2000);
+  refreshNetworkLog();
 </script>
 </body>
 </html>`);
